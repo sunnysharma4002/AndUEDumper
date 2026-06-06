@@ -575,3 +575,18 @@ public:
     inline const ValueType &Value() const { return Second; }
 };)";
 }
+
+std::string IGameProfile::GetExtraOffsetsHeader() const
+{
+    return "";
+}
+
+uintptr_t IGameProfile::GetGEnginePtr() const
+{
+    return 0;
+}
+
+uintptr_t IGameProfile::GetGWorldPtr() const
+{
+    return 0;
+}
