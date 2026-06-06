@@ -55,5 +55,5 @@ private:
 
     void GatherUObjects(BufferFmt &logsBufferFmt, BufferFmt &objsBufferFmt, UEPackagesArray &packages, const ProgressCallback &progressCallback);
 
-    void DumpAIOHeader(BufferFmt &logsBufferFmt, BufferFmt &aioBufferFmt, UEPackagesArray &packages, const ProgressCallback &progressCallback);
+    void DumpAIOHeader(BufferFmt &logsBufferFmt, BufferFmt &aioBufferFmt, std::unordered_map<std::string, BufferFmt> *outBuffersMap, UEPackagesArray &packages, const ProgressCallback &progressCallback);
 };
