@@ -3,6 +3,14 @@
 #include "UE/UEMemory.hpp"
 using namespace UEMemory;
 
+namespace
+{
+    bool StartsWith(const std::string &s, const char *prefix)
+    {
+        return s.rfind(prefix, 0) == 0;
+    }
+}
+
 void UE_UPackage::GenerateBitPadding(std::vector<Member> &members, uint32_t offset, uint8_t bitOffset, uint8_t size)
 {
     Member padding;
@@ -353,15 +361,16 @@ void UE_UPackage::Process()
     auto &objects = Package->second;
     for (auto &object : objects)
     {
-        if (object.IsA<UE_UClass>())
+        std::string fullName = object.GetFullName();
+        if (object.IsA<UE_UClass>() || StartsWith(fullName, "Class "))
         {
             GenerateStruct(object.Cast<UE_UStruct>(), Classes);
         }
-        else if (object.IsA<UE_UScriptStruct>())
+        else if (object.IsA<UE_UScriptStruct>() || StartsWith(fullName, "ScriptStruct "))
         {
             GenerateStruct(object.Cast<UE_UStruct>(), Structures);
         }
-        else if (object.IsA<UE_UEnum>())
+        else if (object.IsA<UE_UEnum>() || StartsWith(fullName, "Enum "))
         {
             GenerateEnum(object.Cast<UE_UEnum>(), Enums);
         }
