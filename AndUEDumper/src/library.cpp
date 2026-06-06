@@ -44,6 +44,7 @@
 #include "UE/UEGameProfiles/Auroria.hpp"
 #include "UE/UEGameProfiles/LineageW.hpp"
 #include "UE/UEGameProfiles/RLSideswipe.hpp"
+#include "UE/UEGameProfiles/BGMI.hpp"
 #include "UE/UEGameProfiles/PUBG.hpp"
 
 std::vector<IGameProfile *> UE_Games = {
@@ -75,6 +76,7 @@ std::vector<IGameProfile *> UE_Games = {
     new AuroriaProfile(),
     new LineageWProfile(),
     new RLSideswipeProfile(),
+    new BGMIProfile(),
     new PUBGProfile(),
 };
 
@@ -187,7 +189,7 @@ void dump_thread(bool bDumpLib)
         if (!once)
         {
             once = true;
-            LOGI("Dumping....");
+            LOGI("Dumping SDK List...");
         };
     });
 
@@ -254,7 +256,15 @@ done:
         if (!it.first.empty())
         {
             std::string path = KittyUtils::String::fmt("%s/%s", sDumpGameDir.c_str(), it.first.c_str());
-            it.second.writeBufferToFile(path);
+            std::string dir = IOUtils::get_file_directory(path);
+            if (!dir.empty() && !IOUtils::path_is_directory(dir))
+                IOUtils::mkdir_recursive(dir, 0777);
+
+            bool saved = it.second.writeBufferToFile(path);
+            if (saved)
+                LOGI("Saved %s (%zu bytes)", it.first.c_str(), it.second.size());
+            else
+                LOGE("Failed to save %s", path.c_str());
         }
     }
 
