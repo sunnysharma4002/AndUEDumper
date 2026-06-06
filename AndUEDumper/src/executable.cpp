@@ -1,6 +1,8 @@
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <cstdlib>
 #include <cstdio>
 #include <iostream>
 #include <unordered_map>
@@ -49,6 +51,7 @@
 #include "UE/UEGameProfiles/Auroria.hpp"
 #include "UE/UEGameProfiles/LineageW.hpp"
 #include "UE/UEGameProfiles/RLSideswipe.hpp"
+#include "UE/UEGameProfiles/BGMI.hpp"
 #include "UE/UEGameProfiles/PUBG.hpp"
 
 std::vector<IGameProfile *> UE_Games = {
@@ -80,10 +83,26 @@ std::vector<IGameProfile *> UE_Games = {
     new AuroriaProfile(),
     new LineageWProfile(),
     new RLSideswipeProfile(),
+    new BGMIProfile(),
     new PUBGProfile(),
 };
 
 bool bNeededHelp = false;
+
+static bool ParseAddressArg(const std::string &value, uintptr_t *out)
+{
+    if (value.empty() || !out)
+        return false;
+
+    char *end = nullptr;
+    errno = 0;
+    unsigned long long parsed = std::strtoull(value.c_str(), &end, 0);
+    if (errno != 0 || end == value.c_str() || *end != '\0')
+        return false;
+
+    *out = static_cast<uintptr_t>(parsed);
+    return true;
+}
 
 int main(int argc, char **args)
 {
@@ -96,7 +115,11 @@ int main(int argc, char **args)
     argparse::ArgumentParser program(kPROGRAM_NAME, kPROGRAM_VER);
 
     std::string gamePkg, outputDir;
+    std::string gnameArg, guobjArg, gworldArg;
+    std::string derefGNameArg, derefGUObjArg;
     bool bDumpLib = false;
+    bool bSdkUObject = false, bSdkWorld = false, bDumpStrings = false, bDumpObjs = false, bShowActors = false;
+    bool bRawLib = false, bFastLib = false, bNewUE = false, bPtrDec = false, bVerbose = false;
     int memAccessType = 0;
 
     program.add_argument("-p", "--package")
@@ -110,7 +133,25 @@ int main(int argc, char **args)
         .store_into(outputDir)
         .metavar("<path>");
 
+    program.add_argument("--sdku").help("Dump SDK with GUObject.").store_into(bSdkUObject);
+    program.add_argument("--sdkw").help("Dump SDK with GWorld.").store_into(bSdkWorld);
+    program.add_argument("--strings").help("Dump strings.").store_into(bDumpStrings);
+    program.add_argument("--objs").help("Dump object list.").store_into(bDumpObjs);
+    program.add_argument("--actors").help("Show actors with GWorld.").store_into(bShowActors);
+
+    program.add_argument("--gname").help("GNames pointer address.").store_into(gnameArg).metavar("<address>");
+    program.add_argument("--guobj").help("GUObject pointer address.").store_into(guobjArg).metavar("<address>");
+    program.add_argument("--gworld").help("GWorld pointer address.").store_into(gworldArg).metavar("<address>");
+
     program.add_argument("-d", "--dump").help("Dump UE library from memory.").store_into(bDumpLib);
+    program.add_argument("--lib").help("Dump libUE4.so from memory.").store_into(bDumpLib);
+    program.add_argument("--raw").help("Output raw lib and not rebuild it.").store_into(bRawLib);
+    program.add_argument("--fast").help("Enable fast dumping.").store_into(bFastLib);
+    program.add_argument("--newue").help("Run in UE 4.23+ mode.").store_into(bNewUE);
+    program.add_argument("--ptrdec").help("Use pointer decryption mode.").store_into(bPtrDec);
+    program.add_argument("--verbose").help("Show verbose output.").store_into(bVerbose);
+    program.add_argument("--derefgname").help("De-reference GNames address.").store_into(derefGNameArg).metavar("<true/false>");
+    program.add_argument("--derefguobj").help("De-reference GUObject address.").store_into(derefGUObjArg).metavar("<true/false>");
 
     program.add_argument("-m", "--mem")
         .help("Specify memory access type in advance.")
@@ -126,6 +167,71 @@ int main(int argc, char **args)
         std::cerr << err.what() << std::endl;
         std::cerr << program;
         return 1;
+    }
+
+    bool bManualBGMI = bSdkUObject || bSdkWorld || bDumpStrings || bDumpObjs || bShowActors ||
+                       !gnameArg.empty() || !guobjArg.empty() || !gworldArg.empty();
+    if (bManualBGMI)
+    {
+        if (!gnameArg.empty() && !ParseAddressArg(gnameArg, &BGMIOptions::GNames))
+        {
+            LOGE("Invalid --gname address: %s", gnameArg.c_str());
+            return 1;
+        }
+
+        if (!guobjArg.empty() && !ParseAddressArg(guobjArg, &BGMIOptions::GUObject))
+        {
+            LOGE("Invalid --guobj address: %s", guobjArg.c_str());
+            return 1;
+        }
+
+        if (!gworldArg.empty() && !ParseAddressArg(gworldArg, &BGMIOptions::GWorld))
+        {
+            LOGE("Invalid --gworld address: %s", gworldArg.c_str());
+            return 1;
+        }
+
+        if (gamePkg.empty())
+            gamePkg = "com.pubg.imobile";
+
+        if ((bSdkUObject || bDumpObjs) && (BGMIOptions::GNames == 0 || BGMIOptions::GUObject == 0))
+        {
+            LOGE("--sdku/--objs require --gname and --guobj.");
+            return 1;
+        }
+
+        if ((bSdkWorld || bShowActors) && (BGMIOptions::GNames == 0 || BGMIOptions::GWorld == 0))
+        {
+            LOGE("--sdkw/--actors require --gname and --gworld.");
+            return 1;
+        }
+
+        if ((bSdkWorld || bShowActors) && BGMIOptions::GUObject == 0)
+        {
+            LOGE("This dumper still needs --guobj for SDK/object traversal. Provide --guobj with --sdkw/--actors.");
+            return 1;
+        }
+
+        if (bDumpStrings && BGMIOptions::GNames == 0)
+        {
+            LOGE("--strings requires --gname.");
+            return 1;
+        }
+
+        if (!derefGNameArg.empty() || !derefGUObjArg.empty())
+            LOGW("--derefgname/--derefguobj are ignored for BGMI built-in direct offsets.");
+
+        if (bNewUE)
+            LOGW("--newue is ignored for BGMI; this profile uses FNamePool names with the older 32-bit object array layout.");
+
+        if (bPtrDec)
+            LOGW("--ptrdec was accepted for CLI compatibility, but pointer decryption is not implemented in this dumper.");
+
+        if (bRawLib || bFastLib)
+            LOGW("--raw/--fast were accepted for CLI compatibility; lib dumping uses the existing dumper path.");
+
+        if (bVerbose)
+            LOGI("Verbose mode enabled.");
     }
 
     if (outputDir.empty())
@@ -300,7 +406,7 @@ int main(int argc, char **args)
         if (!once)
         {
             once = true;
-            LOGI("Dumping....");
+            LOGI("Dumping SDK List...");
         };
         static int lastPercent = -1;
         int currPercent = progress.getPercentage();
@@ -376,7 +482,15 @@ done:
         if (!it.first.empty())
         {
             std::string path = KittyUtils::String::fmt("%s/%s", sDumpGameDir.c_str(), it.first.c_str());
-            it.second.writeBufferToFile(path);
+            std::string dir = IOUtils::get_file_directory(path);
+            if (!dir.empty() && !IOUtils::path_is_directory(dir))
+                IOUtils::mkdir_recursive(dir, 0777);
+
+            bool saved = it.second.writeBufferToFile(path);
+            if (saved)
+                LOGI("Saved %s (%zu bytes)", it.first.c_str(), it.second.size());
+            else
+                LOGE("Failed to save %s", path.c_str());
         }
     }
 
