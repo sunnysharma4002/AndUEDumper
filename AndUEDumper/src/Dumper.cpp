@@ -40,6 +40,52 @@ namespace dumper_jf_ns
     }
 }  // namespace dumper_jf_ns
 
+namespace
+{
+    bool StartsWith(const std::string &s, const char *prefix)
+    {
+        return s.rfind(prefix, 0) == 0;
+    }
+
+    bool IsDumpableObjectByName(const UE_UObject &object)
+    {
+        std::string fullName = object.GetFullName();
+        return StartsWith(fullName, "Class ") ||
+               StartsWith(fullName, "ScriptStruct ") ||
+               StartsWith(fullName, "Enum ") ||
+               StartsWith(fullName, "Function ");
+    }
+
+    void AppendSDKPreamble(BufferFmt &buffer)
+    {
+        buffer.append("#pragma once\n\n#include <cstdio>\n#include <string>\n#include <cstdint>\n\n\n");
+    }
+
+    std::string MakeSDKHeaderPath(const std::string &packageName)
+    {
+        std::string cleanName = IOUtils::replace_specials(packageName, '_');
+        if (cleanName.empty())
+            cleanName = "UnknownPackage";
+
+        return "SDK/" + cleanName + ".hpp";
+    }
+
+    void AppendPackageSDK(BufferFmt &buffer, const UE_UPackage &package, std::vector<UE_UPackage::Enum> &pkgEnums, std::vector<UE_UPackage::Struct> &pkgStructs, std::vector<UE_UPackage::Struct> &pkgClasses)
+    {
+        buffer.append("// Package: {}\n// Enums: {}\n// Structs: {}\n// Classes: {}\n\n",
+                      package.GetObject().GetName(), pkgEnums.size(), pkgStructs.size(), pkgClasses.size());
+
+        if (pkgEnums.size())
+            UE_UPackage::AppendEnumsToBuffer(pkgEnums, &buffer);
+
+        if (pkgStructs.size())
+            UE_UPackage::AppendStructsToBuffer(pkgStructs, &buffer);
+
+        if (pkgClasses.size())
+            UE_UPackage::AppendStructsToBuffer(pkgClasses, &buffer);
+    }
+}  // namespace
+
 bool UEDumper::Init(IGameProfile *profile)
 {
     UEVarsInitStatus initStatus = profile->InitUEVars();
@@ -98,7 +144,10 @@ bool UEDumper::Dump(std::unordered_map<std::string, BufferFmt> *outBuffersMap)
 
     outBuffersMap->insert({"AIOHeader.hpp", BufferFmt()});
     BufferFmt &aioBufferFmt = outBuffersMap->at("AIOHeader.hpp");
-    DumpAIOHeader(logsBufferFmt, aioBufferFmt, packages, _dumpProgressCallback);
+    DumpAIOHeader(logsBufferFmt, aioBufferFmt, outBuffersMap, packages, _dumpProgressCallback);
+
+    outBuffersMap->insert({"SDK.txt", BufferFmt()});
+    outBuffersMap->at("SDK.txt").append("{}", aioBufferFmt.readView());
 
     dumper_jf_ns::base_address = _profile->GetUnrealELF().base();
     if (dumper_jf_ns::jsonFunctions.size())
@@ -153,7 +202,9 @@ void UEDumper::DumpNamesInfo(BufferFmt &logsBufferFmt)
     logsBufferFmt.append("Test dumping first 5 name entries\n");
     for (int i = 0; i < 5; i++)
     {
-        logsBufferFmt.append("GetNameByID({}): {}\n", i, _profile->GetUEVars()->GetNameByID(i));
+        std::string name = _profile->GetUEVars()->GetNameByID(i);
+        LOGI("GetNameByID(%d): %s", i, name.c_str());
+        logsBufferFmt.append("GetNameByID({}): {}\n", i, name);
     }
 
     logsBufferFmt.append("==========================\n");
@@ -173,7 +224,10 @@ void UEDumper::DumpObjectsInfo(BufferFmt &logsBufferFmt)
     for (int i = 0; i < 5; i++)
     {
         UE_UObject obj = UEWrappers::GetObjects()->GetObjectPtr(i);
-        logsBufferFmt.append("GetObjectPtr({}): {}\n", i, obj.GetName());
+        std::string name = obj.GetName();
+        std::string fullName = obj.GetFullName();
+        LOGI("GetObjectPtr(%d): %s | %s", i, name.c_str(), fullName.c_str());
+        logsBufferFmt.append("GetObjectPtr({}): {}\n", i, name);
     }
 
     logsBufferFmt.append("==========================\n");
@@ -187,6 +241,7 @@ void UEDumper::DumpOffsetsInfo(BufferFmt &logsBufferFmt, BufferFmt &offsetsBuffe
     uintptr_t objObjectsPtr = _profile->GetUEVars()->GetObjObjectsPtr();
     uintptr_t UEnginePtr = 0, UWorldPtr = 0, ProcessEventPtr = 0;
     int ProcessEventIndex = 0;
+    bool UEngineFromProfile = false, UWorldFromProfile = false;
 
     // Find UEngine & UWorld
     uint8_t *UEngineObj = nullptr, *UWorldObj = nullptr;
@@ -232,16 +287,6 @@ void UEDumper::DumpOffsetsInfo(BufferFmt &logsBufferFmt, BufferFmt &offsetsBuffe
                 break;
         }
 
-        if (!UEnginePtr)
-            logsBufferFmt.append("Couldn't find refrence to GEngine.\n");
-        else
-            logsBufferFmt.append("GEngine: [<Base> + 0x{:X}] = 0x{:X}\n", UEnginePtr - baseAddr, UEnginePtr);
-
-        if (!UWorldPtr)
-            logsBufferFmt.append("Couldn't find refrence to GWorld.\n");
-        else
-            logsBufferFmt.append("GWorld: [<Base> + 0x{:X}] = 0x{:X}\n", UWorldPtr - baseAddr, UWorldPtr);
-
         logsBufferFmt.append("Finding ProcessEvent...\n");
         uint8_t *obj = UEngineObj ? UEngineObj : UWorldObj;
         if (!obj || !_profile->findProcessEvent(obj, &ProcessEventPtr, &ProcessEventIndex))
@@ -249,6 +294,36 @@ void UEDumper::DumpOffsetsInfo(BufferFmt &logsBufferFmt, BufferFmt &offsetsBuffe
         else
             logsBufferFmt.append("ProcessEvent: Index({}) | [<Base> + 0x{:X}] = 0x{:X}\n", ProcessEventIndex, ProcessEventPtr - baseAddr, ProcessEventPtr);
     }
+
+    if (!UEnginePtr)
+    {
+        uintptr_t profileUEnginePtr = _profile->GetGEnginePtr();
+        if (profileUEnginePtr)
+        {
+            UEnginePtr = profileUEnginePtr;
+            UEngineFromProfile = true;
+        }
+    }
+
+    if (!UWorldPtr)
+    {
+        uintptr_t profileUWorldPtr = _profile->GetGWorldPtr();
+        if (profileUWorldPtr)
+        {
+            UWorldPtr = profileUWorldPtr;
+            UWorldFromProfile = true;
+        }
+    }
+
+    if (!UEnginePtr)
+        logsBufferFmt.append("Couldn't find refrence to GEngine.\n");
+    else
+        logsBufferFmt.append("GEngine: [<Base> + 0x{:X}] = 0x{:X}{}\n", UEnginePtr - baseAddr, UEnginePtr, UEngineFromProfile ? " (profile direct offset)" : "");
+
+    if (!UWorldPtr)
+        logsBufferFmt.append("Couldn't find refrence to GWorld.\n");
+    else
+        logsBufferFmt.append("GWorld: [<Base> + 0x{:X}] = 0x{:X}{}\n", UWorldPtr - baseAddr, UWorldPtr, UWorldFromProfile ? " (profile direct offset)" : "");
 
     UE_Pointers uEPointers{};
     uEPointers.Names = namesPtr - baseAddr;
@@ -261,6 +336,9 @@ void UEDumper::DumpOffsetsInfo(BufferFmt &logsBufferFmt, BufferFmt &offsetsBuffe
 
     offsetsBufferFmt.append("#pragma once\n\n#include <cstdint>\n\n\n");
     offsetsBufferFmt.append("{}\n\n{}", _profile->GetOffsets()->ToString(), uEPointers.ToString());
+    std::string extraOffsetsHeader = _profile->GetExtraOffsetsHeader();
+    if (!extraOffsetsHeader.empty())
+        offsetsBufferFmt.append("\n\n{}", extraOffsetsHeader);
 
     logsBufferFmt.append("==========================\n");
 }
@@ -271,6 +349,7 @@ void UEDumper::GatherUObjects(BufferFmt &logsBufferFmt, BufferFmt &objsBufferFmt
 
     if (UEWrappers::GetObjects()->GetNumElements() <= 0)
     {
+        LOGE("GatherUObjects failed: object count is <= 0.");
         logsBufferFmt.append("UEWrappers::GetObjects()->GetNumElements() <= 0\n");
         logsBufferFmt.append("==========================\n");
         return;
@@ -278,12 +357,14 @@ void UEDumper::GatherUObjects(BufferFmt &logsBufferFmt, BufferFmt &objsBufferFmt
 
     if (((UE_UObject)UEWrappers::GetObjects()->GetObjectPtr(1)).GetIndex() != 1)
     {
+        LOGE("GatherUObjects failed: object index 1 validation failed.");
         logsBufferFmt.append("UEWrappers::GetObjects()->GetObjectPtr(1).GetIndex() != 1\n");
         logsBufferFmt.append("==========================\n");
         return;
     }
 
     int objectsCount = UEWrappers::GetObjects()->GetNumElements();
+    LOGI("GatherUObjects object count: %d", objectsCount);
     SimpleProgressBar objectsProgress(objectsCount);
     if (progressCallback)
         progressCallback(objectsProgress);
@@ -293,7 +374,7 @@ void UEDumper::GatherUObjects(BufferFmt &logsBufferFmt, BufferFmt &objsBufferFmt
         UE_UObject object = UEWrappers::GetObjects()->GetObjectPtr(i);
         if (object)
         {
-            if (object.IsA<UE_UFunction>() || object.IsA<UE_UStruct>() || object.IsA<UE_UEnum>())
+            if (object.IsA<UE_UFunction>() || object.IsA<UE_UStruct>() || object.IsA<UE_UEnum>() || IsDumpableObjectByName(object))
             {
                 bool found = false;
                 auto packageObj = object.GetPackageObject();
@@ -324,9 +405,10 @@ void UEDumper::GatherUObjects(BufferFmt &logsBufferFmt, BufferFmt &objsBufferFmt
     logsBufferFmt.append("==========================\n");
 }
 
-void UEDumper::DumpAIOHeader(BufferFmt &logsBufferFmt, BufferFmt &aioBufferFmt, UEPackagesArray &packages, const ProgressCallback &progressCallback)
+void UEDumper::DumpAIOHeader(BufferFmt &logsBufferFmt, BufferFmt &aioBufferFmt, std::unordered_map<std::string, BufferFmt> *outBuffersMap, UEPackagesArray &packages, const ProgressCallback &progressCallback)
 {
     int packages_saved = 0;
+    int sdk_headers_saved = 0;
     std::string packages_unsaved{};
 
     int classes_saved = 0;
@@ -335,7 +417,7 @@ void UEDumper::DumpAIOHeader(BufferFmt &logsBufferFmt, BufferFmt &aioBufferFmt, 
 
     static bool processInternal_once = false;
 
-    aioBufferFmt.append("#pragma once\n\n#include <cstdio>\n#include <string>\n#include <cstdint>\n\n\n");
+    AppendSDKPreamble(aioBufferFmt);
 
     SimpleProgressBar dumpProgress(int(packages.size()));
     if (progressCallback)
@@ -353,55 +435,52 @@ void UEDumper::DumpAIOHeader(BufferFmt &logsBufferFmt, BufferFmt &aioBufferFmt, 
 
         if (package.Classes.size() || package.Structures.size() || package.Enums.size())
         {
-            aioBufferFmt.append("// Package: {}\n// Enums: {}\n// Structs: {}\n// Classes: {}\n\n",
-                                package.GetObject().GetName(), package.Enums.size(), package.Structures.size(), package.Classes.size());
+            auto pkgEnums = package.Enums;
+            auto pkgStructs = package.Structures;
+            auto pkgClasses = package.Classes;
 
-            if (package.Enums.size())
+            if (excludedObjects.size())
             {
-                auto pkgEnums = package.Enums;
+                pkgEnums.erase(
+                    std::remove_if(pkgEnums.begin(), pkgEnums.end(),
+                                   [&excludedObjects](const UE_UPackage::Enum &it)
+                { return kVECTOR_CONTAINS(excludedObjects, it.FullName); }),
+                    pkgEnums.end());
 
-                if (excludedObjects.size())
-                {
-                    pkgEnums.erase(
-                        std::remove_if(pkgEnums.begin(), pkgEnums.end(),
-                                       [&excludedObjects](const UE_UPackage::Enum &it)
-                    { return kVECTOR_CONTAINS(excludedObjects, it.FullName); }),
-                        pkgEnums.end());
-                }
+                pkgStructs.erase(
+                    std::remove_if(pkgStructs.begin(), pkgStructs.end(),
+                                   [&excludedObjects](const UE_UPackage::Struct &it)
+                { return kVECTOR_CONTAINS(excludedObjects, it.FullName); }),
+                    pkgStructs.end());
 
-                UE_UPackage::AppendEnumsToBuffer(pkgEnums, &aioBufferFmt);
+                pkgClasses.erase(
+                    std::remove_if(pkgClasses.begin(), pkgClasses.end(),
+                                   [&excludedObjects](const UE_UPackage::Struct &it)
+                { return kVECTOR_CONTAINS(excludedObjects, it.FullName); }),
+                    pkgClasses.end());
             }
 
-            if (package.Structures.size())
+            if (pkgClasses.size() || pkgStructs.size() || pkgEnums.size())
             {
-                auto pkgStructs = package.Structures;
+                AppendPackageSDK(aioBufferFmt, package, pkgEnums, pkgStructs, pkgClasses);
 
-                if (excludedObjects.size())
+                if (outBuffersMap)
                 {
-                    pkgStructs.erase(
-                        std::remove_if(pkgStructs.begin(), pkgStructs.end(),
-                                       [&excludedObjects](const UE_UPackage::Struct &it)
-                    { return kVECTOR_CONTAINS(excludedObjects, it.FullName); }),
-                        pkgStructs.end());
-                }
+                    std::string sdkPath = MakeSDKHeaderPath(package.GetObject().GetName());
+                    auto insertResult = outBuffersMap->insert({sdkPath, BufferFmt()});
+                    BufferFmt &sdkBufferFmt = insertResult.first->second;
+                    if (insertResult.second)
+                        AppendSDKPreamble(sdkBufferFmt);
 
-                UE_UPackage::AppendStructsToBuffer(pkgStructs, &aioBufferFmt);
+                    AppendPackageSDK(sdkBufferFmt, package, pkgEnums, pkgStructs, pkgClasses);
+                    sdk_headers_saved++;
+                }
             }
-
-            if (package.Classes.size())
+            else
             {
-                auto pkgClasses = package.Classes;
-
-                if (excludedObjects.size())
-                {
-                    pkgClasses.erase(
-                        std::remove_if(pkgClasses.begin(), pkgClasses.end(),
-                                       [&excludedObjects](const UE_UPackage::Struct &it)
-                    { return kVECTOR_CONTAINS(excludedObjects, it.FullName); }),
-                        pkgClasses.end());
-                }
-
-                UE_UPackage::AppendStructsToBuffer(package.Classes, &aioBufferFmt);
+                packages_unsaved += "\t";
+                packages_unsaved += (package.GetObject().GetName() + ",\n");
+                continue;
             }
         }
         else
@@ -450,7 +529,7 @@ void UEDumper::DumpAIOHeader(BufferFmt &logsBufferFmt, BufferFmt &aioBufferFmt, 
         }
     }
 
-    logsBufferFmt.append("Saved packages: {}\nSaved classes: {}\nSaved structs: {}\nSaved enums: {}\n", packages_saved, classes_saved, structs_saved, enums_saved);
+    logsBufferFmt.append("Saved packages: {}\nSaved SDK headers: {}\nSaved classes: {}\nSaved structs: {}\nSaved enums: {}\n", packages_saved, sdk_headers_saved, classes_saved, structs_saved, enums_saved);
 
     if (packages_unsaved.size())
     {
