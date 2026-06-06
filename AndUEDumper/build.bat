@@ -4,7 +4,7 @@ SETLOCAL ENABLEDELAYEDEXPANSION
 :: ===============================
 :: Config
 :: ===============================
-SET "NDK=%NDK_HOME%"
+SET "NDK=D:\Downloads\android-ndk-r25c-windows\android-ndk-r25c"
 SET "BUILD_TYPE=Release"
 SET "ANDROID_API=21"
 SET "ABIs=arm64-v8a armeabi-v7a x86 x86_64"
