@@ -177,7 +177,7 @@ For games with custom pointer chains, direct offsets or extra generated offset h
 You need to have 'make' installed on your OS and NDK_HOME env variable should be set.
 
 ```bash
-git clone --recursive https://github.com/MJx0/AndUEDumper
+git clone --recursive https://github.com/sharmaofficiall/AndUEDumper
 cd AndUEDumper/AndUEDumper
 make clean && make
 ```
