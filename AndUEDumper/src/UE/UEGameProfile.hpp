@@ -63,6 +63,13 @@ public:
     // UserTypes.hpp
     virtual std::string GetUserTypesHeader() const;
 
+    // Optional profile-specific constants to append to Offsets.hpp.
+    virtual std::string GetExtraOffsetsHeader() const;
+
+    // Optional global pointer overrides used by profiles with known direct offsets.
+    virtual uintptr_t GetGEnginePtr() const;
+    virtual uintptr_t GetGWorldPtr() const;
+
 protected:
     virtual uintptr_t GetGUObjectArrayPtr() const = 0;
 
