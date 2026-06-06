@@ -24,7 +24,6 @@ public:
         return {
             "com.tencent.ig",
             "com.rekoo.pubgm",
-            "com.pubg.imobile",
             "com.pubg.krmobile",
             "com.vng.pubgmobile",
         };
